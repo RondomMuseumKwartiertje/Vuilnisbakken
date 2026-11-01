@@ -58,10 +58,12 @@
   .grid figure:hover .del, .grid .del:focus-visible { opacity: 1; }
   @media (hover: none) { .grid .del { opacity: 1; } }
   .days { list-style: none; padding: 0; margin: 0; display: grid; gap: .6rem; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-  .days button { width: 100%; text-align: left; padding: .9rem 1rem; font-size: 1.05rem; font-family: var(--serif); text-transform: capitalize; }
+  .days button { width: 100%; text-align: left; padding: .9rem 1rem; font-size: 1.05rem; font-family: var(--serif); }
   .days button:hover { border-color: var(--accent); }
-  .days small { display: block; font: .85rem var(--sans); color: var(--muted); text-transform: none; }
+  .days small { display: block; font: .85rem var(--sans); color: var(--muted); }
   #crumb { margin: 0 0 1rem; }
+  .intro { max-width: 60ch; margin: 0 0 1.5rem; color: var(--muted); font-size: 1.05rem; }
+  #openSettings { color: var(--muted); font-size: .9rem; }
   .datepick { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: center; margin-bottom: .9rem; }
   .datepick label { margin: 0; }
   input[type=date] { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
@@ -90,8 +92,10 @@
       <h1>Mijn foto’s</h1>
       <p class="sub" id="count">Foto’s laden…</p>
     </div>
-    <button id="openSettings" type="button">Instellingen</button>
+    <button id="openSettings" type="button" title="Voor de beheerder: token en instellingen">Beheer</button>
   </header>
+
+  <p class="intro" id="intro">Dit zijn foto’s van Amsterdam. Je kunt op een datum klikken en dan zie je de foto’s die ik die dag heb gemaakt. Helaas zitten er ook foto’s bij van zwerfvuil en afvalbakken, maar de gemeente is bezig om dit op te lossen.</p>
 
   <div id="uploader"></div>
   <ul class="queue" id="queue" aria-live="polite"></ul>
@@ -168,7 +172,8 @@
   function today() { var d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
   function prettyDay(s) {
     var p = s.split("-");
-    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    var t = new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    return t.charAt(0).toUpperCase() + t.slice(1);
   }
   function readHash() {
     var h = ""; try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {}
@@ -182,6 +187,7 @@
     var grid = $("grid"), empty = $("empty"), days = $("days");
     grid.innerHTML = ""; days.innerHTML = ""; empty.hidden = true;
     $("crumb").hidden = !view;
+    $("intro").hidden = !!view;
     var dateInput = $("uploadDate");
     if (dateInput) dateInput.value = view && DAY.test(view) ? view : today();
     if (!configured()) {
@@ -193,6 +199,7 @@
     fetch(api(path) + "?ref=" + encodeURIComponent(cfg.branch) + "&t=" + Date.now(), { headers: headers() })
       .then(function (r) {
         if (r.status === 404) return [];
+        if (r.status === 403) throw new Error("GitHub is even te druk. Probeer het over een uur opnieuw.");
         if (!r.ok) throw new Error("GitHub gaf status " + r.status);
         return r.json();
       })
@@ -210,7 +217,7 @@
         var dirs = items.filter(function (i) { return i.type === "dir" && DAY.test(i.name); })
           .sort(function (a, b) { return a.name < b.name ? 1 : -1; });
         $("count").textContent = dirs.length === 1 ? "1 dag" : dirs.length + " dagen";
-        empty.textContent = "Nog geen foto’s. Voeg je eerste foto toe via de knop hierboven.";
+        empty.textContent = "Er staan nog geen foto’s op deze site. Kom later nog eens terug.";
         empty.hidden = dirs.length > 0 || photos.length > 0;
         dirs.forEach(function (d) { days.appendChild(dayButton(d.name, prettyDay(d.name), "")); });
         if (photos.length) days.appendChild(dayButton("overig", "Overig", plural(photos.length) + " zonder datum"));
@@ -260,7 +267,7 @@
   function renderUploader() {
     var box = $("uploader");
     if (!cfg.token) {
-      box.innerHTML = '<div class="locked">Om foto’s toe te voegen heb je een toegangstoken nodig. Open de instellingen om het in te vullen.</div>';
+      box.innerHTML = "";
       return;
     }
     box.innerHTML =
