@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mijn foto’s</title>
+<title>Pictures of Amsterdam</title>
 <style>
   :root {
     --bg: #eef1f0; --surface: #ffffff; --ink: #1c2a29; --muted: #5d6e6c;
@@ -89,10 +89,10 @@
 <div class="wrap">
   <header>
     <div>
-      <h1>Mijn foto’s</h1>
+      <h1>Pictures of Amsterdam</h1>
       <p class="sub" id="count">Foto’s laden…</p>
     </div>
-    <button id="openSettings" type="button" title="Voor de beheerder: token en instellingen">Beheer</button>
+    <button id="openSettings" type="button" hidden>Beheer</button>
   </header>
 
   <p class="intro" id="intro">Dit zijn foto’s van Amsterdam. Je kunt op een datum klikken en dan zie je de foto’s die ik die dag heb gemaakt. Helaas zitten er ook foto’s bij van zwerfvuil en afvalbakken, maar de gemeente is bezig om dit op te lossen.</p>
@@ -177,7 +177,7 @@
   }
   function readHash() {
     var h = ""; try { h = decodeURIComponent(location.hash.slice(1)); } catch (e) {}
-    return DAY.test(h) || h === "overig" ? h : null;
+    return DAY.test(h) || (h === "overig" && cfg.token) ? h : null;
   }
   function go(v) { location.hash = v || ""; }
   function plural(n) { return n === 1 ? "1 foto" : n + " foto’s"; }
@@ -218,9 +218,9 @@
           .sort(function (a, b) { return a.name < b.name ? 1 : -1; });
         $("count").textContent = dirs.length === 1 ? "1 dag" : dirs.length + " dagen";
         empty.textContent = "Er staan nog geen foto’s op deze site. Kom later nog eens terug.";
-        empty.hidden = dirs.length > 0 || photos.length > 0;
+        empty.hidden = dirs.length > 0 || (photos.length > 0 && !!cfg.token);
         dirs.forEach(function (d) { days.appendChild(dayButton(d.name, prettyDay(d.name), "")); });
-        if (photos.length) days.appendChild(dayButton("overig", "Overig", plural(photos.length) + " zonder datum"));
+        if (photos.length && cfg.token) days.appendChild(dayButton("overig", "Overig", plural(photos.length) + " zonder datum"));
       })
       .catch(function (e) { $("count").textContent = "Laden mislukt: " + e.message; });
   }
@@ -373,13 +373,22 @@
     cfg.folder = cfg.folder.replace(/^\/+|\/+$/g, "") || "photos";
     cfg.branch = cfg.branch || "main";
     cfg.resize = $("resize").checked;
-    save(); dlg.close(); renderUploader(); loadGallery();
+    save(); dlg.close(); updateAdmin(); renderUploader(); loadGallery();
   });
+  function updateAdmin() { $("openSettings").hidden = !cfg.token; }
+  function checkAdminLink() {
+    if (location.hash !== "#beheer") return false;
+    history.replaceState(null, "", location.pathname + location.search);
+    openSettings();
+    return true;
+  }
   $("back").addEventListener("click", function () { go(null); });
-  window.addEventListener("hashchange", loadGallery);
+  window.addEventListener("hashchange", function () { if (!checkAdminLink()) loadGallery(); });
   $("lightbox").addEventListener("click", function () { this.close(); });
 
+  updateAdmin();
   renderUploader();
+  checkAdminLink();
   loadGallery();
   if (!configured()) openSettings();
 })();
