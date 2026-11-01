@@ -57,11 +57,15 @@
   }
   .grid figure:hover .del, .grid .del:focus-visible { opacity: 1; }
   @media (hover: none) { .grid .del { opacity: 1; } }
-  .days { list-style: none; padding: 0; margin: 0; display: grid; gap: .6rem; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-  .days button { width: 100%; text-align: left; padding: .9rem 1rem; font-size: 1.05rem; font-family: var(--serif); }
+  .days { list-style: none; padding: 0 0 .4rem; margin: 0 0 1rem; display: flex; gap: .5rem; overflow-x: auto; }
+  .days li { flex: none; }
+  .days button { padding: .4rem .85rem; font-size: .95rem; border-radius: 999px; }
   .days button:hover { border-color: var(--accent); }
-  .days small { display: block; font: .85rem var(--sans); color: var(--muted); }
-  #crumb { margin: 0 0 1rem; }
+  .days button[aria-current="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .grid .daytag { position: absolute; left: .5rem; bottom: .5rem; padding: .2rem .65rem; font-size: .8rem; border-radius: 999px; background: var(--surface); }
+  .days-label { margin: 0 0 .5rem; color: var(--muted); font-size: .95rem; }
+  .more { text-align: center; margin: 1.5rem 0 0; }
+  .more button { font-size: 1.05rem; padding: .8rem 1.5rem; }
   .intro { max-width: 60ch; margin: 0 0 1.5rem; color: var(--muted); font-size: 1.05rem; }
   #openSettings { color: var(--muted); font-size: .9rem; }
   .datepick { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; justify-content: center; margin-bottom: .9rem; }
@@ -99,9 +103,10 @@
 
   <div id="uploader"></div>
   <ul class="queue" id="queue" aria-live="polite"></ul>
-  <p id="crumb" hidden><button id="back" type="button">← Alle dagen</button></p>
+  <p class="days-label" id="daysLabel" hidden>Bekijk de foto’s per dag:</p>
   <ul class="days" id="days"></ul>
   <main class="grid" id="grid"></main>
+  <p class="more" id="more" hidden><button type="button" id="moreBtn" class="primary"></button></p>
   <p class="empty" id="empty" hidden>Nog geen foto’s. Voeg je eerste foto toe via de knop hierboven.</p>
 </div>
 
@@ -182,11 +187,56 @@
   function go(v) { location.hash = v || ""; }
   function plural(n) { return n === 1 ? "1 foto" : n + " foto’s"; }
 
+  function chipLabel(s) {
+    var p = s.split("-"), d = new Date(+p[0], +p[1] - 1, +p[2]);
+    var o = { weekday: "short", day: "numeric", month: "short" };
+    if (d.getFullYear() !== new Date().getFullYear()) o.year = "numeric";
+    return d.toLocaleDateString("nl-NL", o);
+  }
+  function rawUrl(path) {
+    return "https://raw.githubusercontent.com/" + cfg.owner + "/" + cfg.repo + "/" + cfg.branch + "/" +
+      path.split("/").map(encodeURIComponent).join("/");
+  }
+  // Eén aanvraag haalt de hele fotomap met alle dagmappen op.
+  function fetchTree() {
+    var url = "https://api.github.com/repos/" + encodeURIComponent(cfg.owner) + "/" + encodeURIComponent(cfg.repo) +
+      "/git/trees/" + encodeURIComponent(cfg.branch) + "?recursive=1&t=" + Date.now();
+    return fetch(url, { headers: headers() })
+      .then(function (r) {
+        if (r.status === 404) return { tree: [] };
+        if (r.status === 403) throw new Error("GitHub is even te druk. Probeer het over een uur opnieuw.");
+        if (!r.ok) throw new Error("GitHub gaf status " + r.status);
+        return r.json();
+      })
+      .then(function (j) { return j.tree || []; });
+  }
+  function parseTree(entries) {
+    var prefix = cfg.folder + "/", days = {}, loose = [];
+    entries.forEach(function (e) {
+      if (e.type !== "blob" || e.path.indexOf(prefix) !== 0) return;
+      var parts = e.path.slice(prefix.length).split("/"), name = parts[parts.length - 1];
+      if (!IMG.test(name)) return;
+      var item = { name: name, path: e.path, sha: e.sha, download_url: rawUrl(e.path) };
+      if (parts.length === 1) loose.push(item);
+      else if (parts.length === 2 && DAY.test(parts[0])) { item.day = parts[0]; (days[parts[0]] = days[parts[0]] || []).push(item); }
+    });
+    function byName(a, b) { return a.name < b.name ? 1 : -1; }
+    Object.keys(days).forEach(function (d) { days[d].sort(byName); });
+    loose.sort(byName);
+    return { days: days, names: Object.keys(days).sort().reverse(), loose: loose };
+  }
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+
+  var SAMPLE = 12;
+  // Zonder #dag in de URL tonen we meteen een willekeurige selectie uit alle dagen.
   function loadGallery() {
     view = readHash();
     var grid = $("grid"), empty = $("empty"), days = $("days");
     grid.innerHTML = ""; days.innerHTML = ""; empty.hidden = true;
-    $("crumb").hidden = !view;
+    $("more").hidden = true; $("daysLabel").hidden = true; days.hidden = true;
     $("intro").hidden = !!view;
     var dateInput = $("uploadDate");
     if (dateInput) dateInput.value = view && DAY.test(view) ? view : today();
@@ -195,45 +245,61 @@
       return;
     }
     $("count").textContent = "Foto’s laden…";
-    var path = view && DAY.test(view) ? cfg.folder + "/" + view : cfg.folder;
-    fetch(api(path) + "?ref=" + encodeURIComponent(cfg.branch) + "&t=" + Date.now(), { headers: headers() })
-      .then(function (r) {
-        if (r.status === 404) return [];
-        if (r.status === 403) throw new Error("GitHub is even te druk. Probeer het over een uur opnieuw.");
-        if (!r.ok) throw new Error("GitHub gaf status " + r.status);
-        return r.json();
-      })
-      .then(function (items) {
-        if (!Array.isArray(items)) items = [];
-        var photos = items.filter(function (i) { return i.type === "file" && IMG.test(i.name); })
-          .sort(function (a, b) { return a.name < b.name ? 1 : -1; });
-        if (view) {
-          $("count").textContent = (view === "overig" ? "Overig" : prettyDay(view)) + " · " + plural(photos.length);
-          empty.textContent = "Geen foto’s in deze map.";
-          empty.hidden = photos.length > 0;
-          renderPhotos(photos);
-          return;
-        }
-        var dirs = items.filter(function (i) { return i.type === "dir" && DAY.test(i.name); })
-          .sort(function (a, b) { return a.name < b.name ? 1 : -1; });
-        $("count").textContent = dirs.length === 1 ? "1 dag" : dirs.length + " dagen";
+    fetchTree().then(function (entries) {
+      var data = parseTree(entries), loose = cfg.token ? data.loose : [];
+      var tabs = data.names.slice();
+      if (loose.length) tabs.push("overig");
+      if (!tabs.length) {
+        $("count").textContent = "";
         empty.textContent = "Er staan nog geen foto’s op deze site. Kom later nog eens terug.";
-        empty.hidden = dirs.length > 0 || (photos.length > 0 && !!cfg.token);
-        dirs.forEach(function (d) { days.appendChild(dayButton(d.name, prettyDay(d.name), "")); });
-        if (photos.length && cfg.token) days.appendChild(dayButton("overig", "Overig", plural(photos.length) + " zonder datum"));
-      })
-      .catch(function (e) { $("count").textContent = "Laden mislukt: " + e.message; });
+        empty.hidden = false;
+        return;
+      }
+      var pool = [];
+      data.names.forEach(function (d) { pool = pool.concat(data.days[d]); });
+      var current = view && tabs.indexOf(view) !== -1 ? view : (pool.length ? null : tabs[0]);
+
+      var chips = (pool.length ? [null] : []).concat(tabs);
+      chips.forEach(function (t) {
+        var li = document.createElement("li"), b = document.createElement("button");
+        b.type = "button"; b.textContent = t === null ? "Selectie" : (t === "overig" ? "Overig" : chipLabel(t));
+        if (t === current) b.setAttribute("aria-current", "true");
+        b.addEventListener("click", function () {
+          if (t === current) { if (t === null) showHome(); return; }
+          go(t); window.scrollTo(0, 0);
+        });
+        li.appendChild(b); days.appendChild(li);
+      });
+      days.hidden = false; $("daysLabel").hidden = false;
+
+      function showHome() {
+        grid.innerHTML = "";
+        var all = pool.length <= SAMPLE, pick = all ? pool.slice() : shuffle(pool.slice()).slice(0, SAMPLE);
+        var nd = data.names.length, dagen = nd === 1 ? "1 dag" : nd + " dagen";
+        $("count").textContent = all ? plural(pool.length) + " uit " + dagen
+          : "Een willekeurige selectie · " + pick.length + " van " + pool.length + " foto’s uit " + dagen;
+        renderPhotos(pick, true);
+        $("more").hidden = all;
+        $("moreBtn").textContent = "Andere selectie ↻";
+        $("moreBtn").onclick = function () { showHome(); window.scrollTo(0, 0); };
+      }
+      function showDay(d) {
+        var photos = d === "overig" ? loose : data.days[d];
+        $("count").textContent = (d === "overig" ? "Overig" : prettyDay(d)) + " · " + plural(photos.length);
+        renderPhotos(photos, false);
+        var next = tabs[tabs.indexOf(d) + 1];
+        if (next) {
+          $("moreBtn").textContent = "Vorige dag: " + (next === "overig" ? "Overig" : chipLabel(next)) + " →";
+          $("moreBtn").onclick = function () { go(next); window.scrollTo(0, 0); };
+          $("more").hidden = false;
+        }
+      }
+      if (current === null) showHome(); else showDay(current);
+    })
+    .catch(function (e) { $("count").textContent = "Laden mislukt: " + e.message; });
   }
 
-  function dayButton(target, title, note) {
-    var li = document.createElement("li"), b = document.createElement("button");
-    b.type = "button"; b.textContent = title;
-    if (note) { var sm = document.createElement("small"); sm.textContent = note; b.appendChild(sm); }
-    b.addEventListener("click", function () { go(target); });
-    li.appendChild(b); return li;
-  }
-
-  function renderPhotos(photos) {
+  function renderPhotos(photos, withDay) {
     var grid = $("grid");
     photos.forEach(function (p) {
       var fig = document.createElement("figure");
@@ -241,6 +307,12 @@
       img.src = p.download_url; img.loading = "lazy"; img.alt = p.name;
       img.addEventListener("click", function () { $("lbImg").src = p.download_url; $("lbImg").alt = p.name; $("lightbox").showModal(); });
       fig.appendChild(img);
+      if (withDay && p.day) {
+        var t = document.createElement("button");
+        t.className = "daytag"; t.type = "button"; t.textContent = chipLabel(p.day) + " →";
+        t.addEventListener("click", function () { go(p.day); window.scrollTo(0, 0); });
+        fig.appendChild(t);
+      }
       if (cfg.token) {
         var d = document.createElement("button");
         d.className = "del"; d.type = "button"; d.textContent = "Verwijderen";
@@ -259,7 +331,7 @@
     }).then(function (r) {
       if (!r.ok) throw new Error("status " + r.status);
       fig.remove(); toast("Foto verwijderd");
-      if (!$("grid").children.length) go(null); // lege map bestaat op GitHub niet meer
+      loadGallery();
     }).catch(function (e) { toast("Verwijderen mislukt: " + e.message); });
   }
 
@@ -382,7 +454,6 @@
     openSettings();
     return true;
   }
-  $("back").addEventListener("click", function () { go(null); });
   window.addEventListener("hashchange", function () { if (!checkAdminLink()) loadGallery(); });
   $("lightbox").addEventListener("click", function () { this.close(); });
 
